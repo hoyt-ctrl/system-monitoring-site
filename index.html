@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hermes Monitor</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --green: #3fb950;
+      --yellow: #d29922; --red: #f85149; --cyan: #39d353;
+      --accent: #58a6ff; --radius: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Consolas', monospace; font-size: 13px; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.5px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+    .dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+    .ts { margin-left: auto; color: var(--muted); font-size: 11px; }
+    main { padding: 20px 24px; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+    .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 12px; }
+    .stat { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    .stat:last-child { border-bottom: none; }
+    .stat .label { color: var(--muted); }
+    .stat .value { color: var(--text); font-weight: 500; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge.green { background: rgba(63,185,80,0.15); color: var(--green); }
+    .badge.red   { background: rgba(248,81,73,0.15);  color: var(--red); }
+    .badge.yellow{ background: rgba(210,153,34,0.15); color: var(--yellow); }
+    .model-list { list-style: none; max-height: 260px; overflow-y: auto; }
+    .model-list li { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); gap: 8px; }
+    .model-list li:last-child { border-bottom: none; }
+    .model-name { color: var(--accent); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .model-size { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .active-tag { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: rgba(88,166,255,0.15); color: var(--accent); }
+    .bar-wrap { margin-top: 6px; }
+    .bar-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    .bar-fill.green { background: var(--green); }
+    .bar-fill.yellow { background: var(--yellow); }
+    .bar-fill.red { background: var(--red); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    button { background: var(--border); border: 1px solid #444c56; color: var(--text); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; font-family: inherit; font-size: 12px; transition: background 0.15s; }
+    button:hover { background: #444c56; }
+    button.primary { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+    button.primary:hover { background: rgba(88,166,255,0.25); }
+    #log { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; font-size: 11px; height: 120px; overflow-y: auto; color: var(--muted); white-space: pre-wrap; }
+    .log-line { padding: 1px 0; }
+    .log-line.ok  { color: var(--green); }
+    .log-line.err { color: var(--red); }
+    .log-line.info{ color: var(--accent); }
+    .wide { grid-column: 1 / -1; }
+    .bench-result { margin-top: 10px; font-size: 12px; color: var(--cyan); }
+  </style>
+</head>
+<body>
+<header>
+  <div class="dot" id="status-dot"></div>
+  <h1>HERMES MONITOR</h1>
+  <span class="ts" id="last-updated">–</span>
+</header>
+<main>
+
+  <!-- Connection -->
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="stat"><span class="label">Ollama</span>    <span class="value" id="s-ollama">–</span></div>
+    <div class="stat"><span class="label">Host</span>      <span class="value" id="s-host">–</span></div>
+    <div class="stat"><span class="label">Backend</span>   <span class="value" id="s-backend">–</span></div>
+    <div class="stat"><span class="label">Primary model</span><span class="value" id="s-model" style="color:var(--accent)">–</span></div>
+  </div>
+
+  <!-- System -->
+  <div class="card">
+    <h2>System</h2>
+    <div class="stat"><span class="label">CPU cores</span><span class="value" id="s-cpu">–</span></div>
+    <div class="stat"><span class="label">RAM total</span><span class="value" id="s-ram">–</span></div>
+    <div class="stat"><span class="label">RAM used</span> <span class="value" id="s-ram-used">–</span></div>
+    <div class="stat"><span class="label">Platform</span> <span class="value" id="s-platform">–</span></div>
+    <div class="bar-wrap">
+      <div class="bar-label"><span>Memory</span><span id="s-ram-pct">–</span></div>
+      <div class="bar"><div class="bar-fill green" id="bar-ram" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- Loaded models -->
+  <div class="card">
+    <h2>Running models</h2>
+    <ul class="model-list" id="running-models"><li style="color:var(--muted)">none loaded</li></ul>
+  </div>
+
+  <!-- Actions -->
+  <div class="card">
+    <h2>Quick actions</h2>
+    <div class="actions">
+      <button class="primary" onclick="runBench()">▶ Benchmark</button>
+      <button onclick="refreshNow()">↺ Refresh</button>
+      <button onclick="openCLI()">⌨ CLI Agent</button>
+      <button onclick="openDash()">⎋ Dashboard</button>
+    </div>
+    <div class="bench-result" id="bench-result"></div>
+  </div>
+
+  <!-- All models -->
+  <div class="card wide">
+    <h2>Available models (<span id="model-count">0</span>)</h2>
+    <ul class="model-list" id="all-models"><li style="color:var(--muted)">loading…</li></ul>
+  </div>
+
+  <!-- Log -->
+  <div class="card wide">
+    <h2>Event log</h2>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script src="data.js"></script>
+<script>
+const OLLAMA_HOST = window.HERMES_CONFIG?.ollamaHost || 'http://127.0.0.1:11435';
+const BACKEND     = window.HERMES_CONFIG?.backend     || 'http://127.0.0.1:7788';
+const PRIMARY     = window.HERMES_CONFIG?.primaryModel || 'hermes-qwen-64k-fixed:latest';
+let logLines = [];
+
+function log(msg, type='info') {
+  const ts = new Date().toLocaleTimeString();
+  logLines.push(`<div class="log-line ${type}">[${ts}] ${msg}</div>`);
+  if (logLines.length > 80) logLines.shift();
+  document.getElementById('log').innerHTML = logLines.join('');
+  document.getElementById('log').scrollTop = 9999;
+}
+
+function badge(ok, yes='online', no='offline') {
+  return `<span class="badge ${ok?'green':'red'}">${ok?yes:no}</span>`;
+}
+
+function barColor(pct) {
+  return pct > 85 ? 'red' : pct > 65 ? 'yellow' : 'green';
+}
+
+async function fetchOllama() {
+  try {
+    const [tags, ps] = await Promise.all([
+      fetch(`${OLLAMA_HOST}/api/tags`).then(r=>r.json()),
+      fetch(`${OLLAMA_HOST}/api/ps`).then(r=>r.json()).catch(()=>({models:[]}))
+    ]);
+
+    document.getElementById('s-ollama').innerHTML = badge(true);
+    document.getElementById('s-host').textContent = OLLAMA_HOST;
+    document.getElementById('s-model').textContent = PRIMARY;
+    document.getElementById('status-dot').className = 'dot';
+
+    const models = tags.models || [];
+    document.getElementById('model-count').textContent = models.length;
+
+    const allEl = document.getElementById('all-models');
+    allEl.innerHTML = models.map(m => {
+      const gb = (m.size/1073741824).toFixed(1);
+      const isActive = m.name === PRIMARY;
+      return `<li>
+        <span class="model-name">${m.name}</span>
+        ${isActive ? '<span class="active-tag">primary</span>' : ''}
+        <span class="model-size">${gb}GB</span>
+      </li>`;
+    }).join('') || '<li style="color:var(--muted)">none</li>';
+
+    const running = ps.models || [];
+    document.getElementById('running-models').innerHTML = running.length
+      ? running.map(m => `<li>
+          <span class="model-name">${m.name}</span>
+          <span class="model-size">${(m.size/1073741824).toFixed(1)}GB</span>
+        </li>`).join('')
+      : '<li style="color:var(--muted)">none loaded</li>';
+
+    log(`Ollama OK — ${models.length} models available`, 'ok');
+    return true;
+  } catch(e) {
+    document.getElementById('s-ollama').innerHTML = badge(false);
+    document.getElementById('s-host').textContent = OLLAMA_HOST;
+    document.getElementById('status-dot').className = 'dot red';
+    log(`Ollama unreachable: ${e.message}`, 'err');
+    return false;
+  }
+}
+
+async function fetchBackend() {
+  try {
+    const data = await fetch(`${BACKEND}/system`).then(r=>r.json());
+    document.getElementById('s-backend').innerHTML = badge(true);
+    document.getElementById('s-cpu').textContent = data.cpu_cores + ' cores';
+    document.getElementById('s-ram').textContent = data.ram_total_gb.toFixed(1) + ' GB';
+    document.getElementById('s-ram-used').textContent = data.ram_used_gb.toFixed(1) + ' GB';
+    document.getElementById('s-platform').textContent = data.platform || '–';
+    const pct = Math.round(data.ram_used_pct);
+    document.getElementById('s-ram-pct').textContent = pct + '%';
+    const bar = document.getElementById('bar-ram');
+    bar.style.width = pct + '%';
+    bar.className = `bar-fill ${barColor(pct)}`;
+    log(`System stats: ${data.cpu_cores} cores, ${data.ram_total_gb.toFixed(1)}GB RAM (${pct}% used)`, 'ok');
+  } catch(e) {
+    document.getElementById('s-backend').innerHTML = badge(false, 'online', 'offline (run backend/main.py)');
+    document.getElementById('s-cpu').textContent = navigator.hardwareConcurrency + ' cores (browser)';
+    document.getElementById('s-platform').textContent = navigator.platform;
+    log('Backend offline — run: python3 backend/main.py', 'info');
+  }
+}
+
+async function refresh() {
+  document.getElementById('last-updated').textContent = 'updating…';
+  await Promise.all([fetchOllama(), fetchBackend()]);
+  document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+async function runBench() {
+  const el = document.getElementById('bench-result');
+  el.textContent = 'running…';
+  log('Starting benchmark…', 'info');
+  const start = Date.now();
+  try {
+    const res = await fetch(`${OLLAMA_HOST}/api/generate`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({model: PRIMARY, prompt: 'Reply in exactly 5 words: what is AI?', stream: false, options:{num_predict:10}})
+    }).then(r=>r.json());
+    const ms = Date.now() - start;
+    const tps = res.eval_count ? Math.round(res.eval_count * 1000 / ms) : '?';
+    el.textContent = `${tps} tok/s · ${ms}ms · "${res.response?.trim()}"`;
+    log(`Benchmark: ${tps} tok/s in ${ms}ms`, 'ok');
+  } catch(e) {
+    el.textContent = 'Failed — is Ollama running?';
+    log('Benchmark failed: ' + e.message, 'err');
+  }
+}
+
+function refreshNow() { refresh(); }
+function openCLI()  { log('Open a terminal and run: hermes -p default', 'info'); }
+function openDash() { window.open('http://localhost:8080', '_blank'); }
+
+// Auto-refresh every 30s
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
