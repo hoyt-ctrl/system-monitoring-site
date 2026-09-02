@@ -118,7 +118,10 @@ config_path, model = sys.argv[1], sys.argv[2]
 with open(config_path) as f:
     content = f.read()
 content = re.sub(r'^primary_model:.*$', f'primary_model: {model}', content, flags=re.MULTILINE)
-content = re.sub(r'^(ollama:.*?\n  default_model:)\s*.*$',
+# NOTE: `[ \t]*`, never `\s*` — `\s` matches newlines, so on a key with an
+# empty value the match runs past the end of the line and DELETES the line
+# below it. Config destruction with no error. Pinned by tests/test_monitor.py.
+content = re.sub(r'^(ollama:.*?\n  default_model:)[ \t]*.*$',
                  lambda m: f'{m.group(1)} {model}',
                  content, flags=re.MULTILINE)
 with open(config_path, 'w') as f:
