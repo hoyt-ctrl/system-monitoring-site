@@ -15,3 +15,9 @@ backend:
 
 serve:
 	python3 -m http.server 7799
+
+# Prove the gate can fail. Minutes-long; kept OFF the commit path but on disk
+# and reachable — a rig only a transcript knows how to launch is ephemeral
+# evidence (portfolio-kickoff-sweep pitfall 26).
+mutation-proof:
+	./tools/mutation_proof.sh
