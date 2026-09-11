@@ -13,6 +13,22 @@ trap 'rm -rf "$TMP"' EXIT
 cp -Rp "$SRC/." "$TMP/"
 cd "$TMP"
 
+# The tracking mutants below run `git` inside the scratch. If this repo were ever
+# a WORKTREE its `.git` would be a FILE pointing at the parent, and `cp -Rp`
+# would share the LIVE index — so `git rm --cached` would untrack a real test
+# file in the working repo while reporting a clean scratch experiment (pitfall
+# 21h). Re-init a standalone index unconditionally; it also restores the
+# `git ls-files` count that a `.git`-less copy would lose (pitfall 21).
+rm -rf .git
+git init -q . >/dev/null 2>&1
+git add -A >/dev/null 2>&1
+git -c user.name=rig -c user.email=rig@local commit -qm scratch >/dev/null 2>&1
+scratch_git="$(git rev-parse --git-dir)"
+case "$scratch_git" in
+  "$TMP"/*|.git) : ;;
+  *) echo "RIG UNSAFE: scratch git-dir is $scratch_git (outside the scratch). Aborting."; exit 1 ;;
+esac
+
 echo "=== BASELINE ==="
 if ./verify.sh >/dev/null 2>&1; then
   echo "baseline PASS"
@@ -63,6 +79,41 @@ mutate() { # name file owner-regex mutation-command
     fi
   fi
   cp -p "$TMP/.orig" "$file"
+}
+
+# Mutations to the tracked-file LIST change no existing file's bytes, so the
+# `cmp -s` apply-guard above cannot see them (pitfall 21h). Guard on the
+# `git ls-files` count before/after instead, and restore from git.
+mutate_tracking() { # name owner-regex mutation-command...
+  local name="$1" owner="$2"; shift 2
+  local before after out rc fails
+  before=$(git ls-files 'tests/test_*.py' | wc -l | tr -d ' ')
+  "$@"
+  after=$(git ls-files 'tests/test_*.py' | wc -l | tr -d ' ')
+  if [ "$before" = "$after" ]; then
+    echo "  UNAPPLIED  $name   (tracked count unchanged at $before — broken rig, not a passing gate)"
+    unapplied=$((unapplied+1))
+  else
+    out=$(./verify.sh 2>&1); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      fails=$(echo "$out" | grep -E '  FAIL|^FAIL:|^ERROR:')
+      if echo "$fails" | grep -qE "$owner"; then
+        echo "  KILLED     $name  ->  $(echo "$fails" | grep -E "$owner" | head -1 | sed 's/^ *//')"
+        killed=$((killed+1))
+      else
+        echo "  MISATTRIBUTED  $name  (died, but not on its owning check)"
+        echo "$fails" | sed 's/^/      /'
+        misattributed=$((misattributed+1))
+      fi
+    else
+      echo "  SURVIVED   $name  (gate asserted nothing)"
+      survived=$((survived+1))
+    fi
+  fi
+  rm -f tests/test_planted.py
+  git checkout -- . >/dev/null 2>&1
+  git reset -q >/dev/null 2>&1
+  git checkout -- . >/dev/null 2>&1
 }
 
 echo "=== MUTANTS ==="
@@ -121,6 +172,35 @@ mutate "malformed json" .claude/launch.json \
 mutate "test suite emptied" tests/test_monitor.py \
   'tests defined \(suite was gutted' \
   perl -0pi -e 's|.*|# emptied by mutation proof\n|s' tests/test_monitor.py
+
+# 12. A suite FILE is deleted from the index. The file stays on disk so the
+#     runner still passes — the tracked pin is the only check that can fire
+#     (clean attribution, pitfall 23).
+mutate_tracking "suite file untracked (1 -> 0)" \
+  'suite files .*pin is 1 — a suite was deleted' \
+  git rm --cached -q tests/test_monitor.py
+
+# 13. A second suite is added WITHOUT bumping the pin or wiring it into the
+#     runner — the stale-pin branch. Content is valid python with real tests so
+#     the syntax and count checks stay green and the pin is the sole witness.
+plant_suite() {
+  cat > tests/test_planted.py <<'PY'
+import unittest
+
+
+class TestPlanted(unittest.TestCase):
+    def test_planted(self):
+        self.assertTrue(True)
+
+
+if __name__ == "__main__":
+    unittest.main()
+PY
+  git add -N tests/test_planted.py >/dev/null 2>&1
+}
+mutate_tracking "suite added without bumping the pin (1 -> 2)" \
+  'SUITE_FILES_PIN=1 is STALE' \
+  plant_suite
 
 echo ""
 echo "MUTATION PROOF: killed=$killed survived=$survived unapplied=$unapplied misattributed=$misattributed"

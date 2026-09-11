@@ -68,6 +68,27 @@ else
 fi
 
 echo "== test suite =="
+# Two-sided pin on the tracked suite-FILE count (pitfall 21g). The runner below
+# invokes ONE hardcoded suite path, so both directions are invisible without it:
+# delete tests/test_monitor.py and the whole suite vanishes; ADD tests/test_x.py
+# and it is silently never run (pitfall 19 — an allowlist cannot see new tests).
+# Below the pin = deletion. Above = the pin is STALE and the new suite is not
+# wired into the runner; both are hard failures naming the exact fix.
+SUITE_FILES_PIN=1
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  suite_files=$(git ls-files 'tests/test_*.py' | wc -l | tr -d ' ')
+  suite_mode="git"
+else
+  suite_files=$(ls tests/test_*.py 2>/dev/null | wc -l | tr -d ' ')
+  suite_mode="glob"
+fi
+if [ "$suite_files" -lt "$SUITE_FILES_PIN" ]; then
+  fail "only $suite_files suite files ($suite_mode), pin is $SUITE_FILES_PIN — a suite was deleted"
+elif [ "$suite_files" -gt "$SUITE_FILES_PIN" ]; then
+  fail "$suite_files suite files ($suite_mode) but SUITE_FILES_PIN=$SUITE_FILES_PIN is STALE — bump it to $suite_files AND wire the new suite into the runner below, or it never runs"
+else
+  pass "suite files pinned at $SUITE_FILES_PIN ($suite_mode)"
+fi
 out=$(python3 tests/test_monitor.py 2>&1)
 status=$?
 ran=$(echo "$out" | grep -oE '^Ran [0-9]+ test' | grep -oE '[0-9]+' || echo 0)
