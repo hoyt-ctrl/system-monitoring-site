@@ -20,14 +20,26 @@ cd "$TMP"
 # 21h). Re-init a standalone index unconditionally; it also restores the
 # `git ls-files` count that a `.git`-less copy would lose (pitfall 21).
 rm -rf .git
+# Hermeticity: global core.hooksPath is ~/.githooks, so a bare commit here runs the
+# machine's devflow T0 gitleaks scan. With gitleaks off PATH that commit fails SILENTLY
+# and the scratch stays staged-but-uncommitted — the tracking mutants then compare
+# against a dirty tree and the rig blames content. Pin hooks off and --no-verify.
 git init -q . >/dev/null 2>&1
-git add -A >/dev/null 2>&1
-git -c user.name=rig -c user.email=rig@local commit -qm scratch >/dev/null 2>&1
+git -c core.hooksPath=/dev/null add -A >/dev/null 2>&1
+git -c core.hooksPath=/dev/null -c user.name=rig -c user.email=rig@local \
+    commit --no-verify -qm scratch >/dev/null 2>&1
 scratch_git="$(git rev-parse --git-dir)"
 case "$scratch_git" in
   "$TMP"/*|.git) : ;;
   *) echo "RIG UNSAFE: scratch git-dir is $scratch_git (outside the scratch). Aborting."; exit 1 ;;
 esac
+# A baseline commit that did not land is a RIG failure, named as one, before any content check.
+if ! git rev-parse HEAD >/dev/null 2>&1; then
+  echo "RIG DEFECT: scratch baseline commit FAILED (hook or git-config leak) — aborting."; exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "RIG DEFECT: scratch baseline tree is NOT clean after commit — aborting."; exit 1
+fi
 
 echo "=== BASELINE ==="
 if ./verify.sh >/dev/null 2>&1; then
