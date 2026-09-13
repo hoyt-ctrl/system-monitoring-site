@@ -13,10 +13,77 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 rc=0
+RAN=0
+_FINISHED=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1"; rc=1; }
+leg() { echo "== $1 =="; RAN=$((RAN + 1)); }
+# Gate-integrity failures must NOT report through fail()/finish(): a mutation of
+# finish() is exactly what they exist to catch, and a check that reports through
+# the machinery it inspects can be silenced by mutating that machinery. Disarm
+# the trap, own the exit status outright.
+_die() { trap - EXIT; echo "FAIL(gate-integrity): $1"; exit 2; }
 
-echo "== shell syntax =="
+# Two-sided MEASURED execution pin. Below = the gate short-circuited (a planted
+# `exit 0`, a bare `exit`, an inline `true && exit 0` — all exit 0, so only an
+# EXECUTION floor can own them; an rc!=0 branch cannot fire). Above = the pin is
+# STALE after a leg was added, and must fail LOUDLY naming the bump rather than
+# silently un-flooring the newest leg.
+LEG_PIN=6
+
+finish() {
+  local st=$?
+  [ "$_FINISHED" = 0 ] || return
+  _FINISHED=1
+  if [ "$st" -ne 0 ] && [ "$rc" -eq 0 ]; then
+    echo "  FAIL  gate terminated early with status $st before reaching the verdict"
+    rc=1
+  fi
+  if [ "$RAN" -lt "$LEG_PIN" ]; then
+    echo "  FAIL  EXECUTION pin: only $RAN of $LEG_PIN legs ran — the gate short-circuited"
+    rc=1
+  elif [ "$RAN" -gt "$LEG_PIN" ]; then
+    echo "  FAIL  $RAN legs ran but LEG_PIN=$LEG_PIN is STALE — bump it to $RAN"
+    rc=1
+  fi
+  echo ""
+  if [ "$rc" -eq 0 ]; then echo "VERIFY: PASS"; else echo "VERIFY: FAIL"; fi
+  exit "$rc"
+}
+trap finish EXIT
+
+# ---- GATE INTEGRITY CHECKS BELOW ----
+# Everything above this marker is the machinery under inspection; the checks
+# below read ONLY that region, so a check cannot match its own text (a
+# self-inspecting grep that matches its own line reports green over a gutted
+# subject). The scoping anchor is itself falsifiable: if the marker is missing,
+# sed returns the WHOLE file, BODY_LINES == FILE_LINES, and the first check
+# fires.
+leg "gate integrity"
+BODY=$(sed -n '1,/^# ---- GATE INTEGRITY CHECKS BELOW ----$/p' "$0")
+BODY_LINES=$(printf '%s\n' "$BODY" | wc -l | tr -d ' ')
+FILE_LINES=$(wc -l < "$0" | tr -d ' ')
+[ "$BODY_LINES" -gt 0 ] && [ "$BODY_LINES" -lt "$FILE_LINES" ] \
+  || _die "scoping anchor did not match — BODY is $BODY_LINES of $FILE_LINES lines"
+pass "scoping anchor scopes to the machinery ($BODY_LINES of $FILE_LINES lines)"
+# grep -qF throughout: this machinery is metacharacter-heavy and hand-escaping it
+# for ERE is how a check fails closed against its own healthy subject.
+printf '%s\n' "$BODY" | grep -qF 'trap finish EXIT' || _die "EXIT trap not installed"
+printf '%s\n' "$BODY" | grep -qF '_FINISHED=1' || _die "finish() re-entry latch missing"
+printf '%s\n' "$BODY" | grep -qF '[ "$_FINISHED" = 0 ] || return' \
+  || _die "finish() re-entry guard line missing (the latch assignment alone is not the guard)"
+printf '%s\n' "$BODY" | grep -qE '^LEG_PIN=[0-9]+$' || _die "LEG_PIN not declared"
+printf '%s\n' "$BODY" | grep -qF 'VERIFY: FAIL' || _die "finish() cannot report a FAIL verdict"
+# Anchored ERE, not -qF: the comment above quotes this line, and a fixed-string
+# match would match the explanation instead of the code (an anchored pattern
+# excludes any #-leading line).
+printf '%s\n' "$BODY" | grep -qE '^[[:space:]]*exit "\$rc"$' \
+  || _die "finish() does not exit with the roll-up status"
+printf '%s\n' "$BODY" | grep -qF 'RAN=$((RAN + 1))' \
+  || _die "leg() does not increment the execution counter"
+pass "gate machinery intact (trap, re-entry guard, pin, verdict, exit status, counter)"
+
+leg "shell syntax"
 n=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
@@ -29,7 +96,7 @@ while IFS= read -r f; do
 done < <(git ls-files '*.sh')
 if [ "$n" -eq 0 ]; then fail "no shell files examined (coverage gap)"; else echo "  ($n shell files)"; fi
 
-echo "== python syntax =="
+leg "python syntax"
 n=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
@@ -38,7 +105,7 @@ while IFS= read -r f; do
 done < <(git ls-files '*.py')
 if [ "$n" -eq 0 ]; then fail "no python files examined (coverage gap)"; else echo "  ($n python files)"; fi
 
-echo "== json syntax =="
+leg "json syntax"
 n=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
@@ -51,7 +118,7 @@ while IFS= read -r f; do
 done < <(git ls-files '*.json')
 if [ "$n" -eq 0 ]; then fail "no json files examined (coverage gap)"; else echo "  ($n json files)"; fi
 
-echo "== dashboard/config coherence =="
+leg "dashboard/config coherence"
 # data.js declares the backend port; backend/main.py binds it. A drift here
 # means a dashboard that silently shows nothing.
 port_js=$(grep -oE "backend:[^,]*" data.js | grep -oE '127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' || true)
@@ -67,7 +134,7 @@ else
   fail "backend port drift: data.js=$port_js backend/main.py=$port_py"
 fi
 
-echo "== test suite =="
+leg "test suite"
 # Two-sided pin on the tracked suite-FILE count (pitfall 21g). The runner below
 # invokes ONE hardcoded suite path, so both directions are invisible without it:
 # delete tests/test_monitor.py and the whole suite vanishes; ADD tests/test_x.py
@@ -112,6 +179,6 @@ else
   pass "unit suite $ran/$expected, 0 skipped"
 fi
 
-echo ""
-if [ "$rc" -eq 0 ]; then echo "VERIFY: PASS"; else echo "VERIFY: FAIL"; fi
-exit "$rc"
+# No verdict here on purpose: finish() (the EXIT trap) owns the execution pin,
+# the verdict line and the exit status, so they run on EVERY exit path — a
+# bottom-placed roll-up is skipped entirely by any short-circuit above it.

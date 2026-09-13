@@ -75,7 +75,11 @@ mutate() { # name file owner-regex mutation-command
     if [ "$rc" -ne 0 ]; then
       # Search ALL failure lines, not head -1: one mutation trips several checks
       # and the owning one is frequently not the first printed.
-      fails=$(echo "$out" | grep -E '  FAIL|^FAIL:|^ERROR:')
+      # Gate-integrity checks report via _die on a DIFFERENT channel
+      # (`FAIL(gate-integrity):`) precisely so a mutated finish() cannot launder
+      # them. A filter that misses that channel returns EMPTY and reads a
+      # correct kill as MISATTRIBUTED with a blank owner line (pitfall 23g).
+      fails=$(echo "$out" | grep -E '  FAIL|^FAIL:|^FAIL\(gate-integrity\)|^ERROR:')
       if echo "$fails" | grep -qE "$owner"; then
         echo "  KILLED     $name  ->  $(echo "$fails" | grep -E "$owner" | head -1 | sed 's/^ *//')"
         killed=$((killed+1))
@@ -213,6 +217,39 @@ PY
 mutate_tracking "suite added without bumping the pin (1 -> 2)" \
   'SUITE_FILES_PIN=1 is STALE' \
   plant_suite
+
+# --- gate-integrity mutants -------------------------------------------------
+# The three canonical short-circuits all exit 0, so the "terminated early"
+# branch (which needs rc != 0) can NEVER own them — the EXECUTION PIN does
+# (pitfall 23e). Anchor: `leg "dashboard/config coherence"`, verified unique and
+# positioned BELOW the trap install, so the plant lands after the trap exists
+# (pitfall 23d).
+for spell in 'exit 0' 'exit' 'true && exit 0'; do
+  mutate "short-circuit: $spell" verify.sh \
+    'EXECUTION pin: only [0-9]+ of [0-9]+ legs ran' \
+    env MUT="$spell" perl -0pi -e 's{^(leg "dashboard/config coherence")$}{$ENV{MUT}\n$1}m' verify.sh
+done
+
+# Trap uninstalled — the verdict, the pin and the exit status all vanish.
+mutate "EXIT trap uninstalled" verify.sh \
+  'EXIT trap not installed' \
+  perl -0pi -e 's{^trap finish EXIT$}{: no trap}m' verify.sh
+
+# Re-entry GUARD deleted while the latch assignment stays — a check that greps
+# only for `_FINISHED=1` survives this (pitfall 23e).
+mutate "re-entry guard line deleted" verify.sh \
+  're-entry guard line missing' \
+  perl -0pi -e 's{^  \[ "\$_FINISHED" = 0 \] \|\| return\n}{}m' verify.sh
+
+# Roll-up status laundered to 0 — a red gate that reports exit 0.
+mutate "roll-up exit laundered to 0" verify.sh \
+  'does not exit with the roll-up status' \
+  perl -0pi -e 's{^  exit "\$rc"$}{  exit 0}m' verify.sh
+
+# Execution counter removed — every leg runs but RAN stays 0.
+mutate "leg counter removed" verify.sh \
+  'does not increment the execution counter' \
+  perl -0pi -e 's{^leg\(\) \{ echo "== \$1 =="; RAN=\$\(\(RAN \+ 1\)\); \}$}{leg() { echo "== $1 =="; }}m' verify.sh
 
 echo ""
 echo "MUTATION PROOF: killed=$killed survived=$survived unapplied=$unapplied misattributed=$misattributed"
